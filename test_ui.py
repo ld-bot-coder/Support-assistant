@@ -117,8 +117,8 @@ def run_tests():
             print("SKIP: Edit button not visible (draft may not be generated)")
 
         print("\n=== Test 13: Validation errors on create form ===")
-        page.goto(f"{BASE_URL}/create")
-        page.click("text=New Ticket") if page.locator("text=New Ticket").count() > 0 else None
+        page.goto(BASE_URL)
+        page.click("text=New Ticket")
         page.wait_for_selector("text=Create New Ticket", timeout=10000)
         page.click("button:has-text('Create Ticket')")
         page.wait_for_timeout(500)
