@@ -1,21 +1,26 @@
 from datetime import datetime
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Literal
+
+VALID_STATUSES = {"open", "in_progress", "resolved", "closed"}
+VALID_URGENCIES = {"low", "medium", "high", "critical"}
+VALID_DRAFT_STATUSES = {"pending", "approved", "rejected"}
+VALID_ACTION_STATUSES = {"pending", "approved", "rejected"}
 
 
 class TicketCreate(BaseModel):
     customer_type: str
     product_area: str
-    issue_description: str
+    issue_description: str = Field(min_length=1)
     previous_communication: str = ""
-    urgency: str = "medium"
+    urgency: Literal["low", "medium", "high", "critical"] = "medium"
 
 
 class TicketUpdate(BaseModel):
-    status: Optional[str] = None
+    status: Optional[Literal["open", "in_progress", "resolved", "closed"]] = None
     ai_drafted_response: Optional[str] = None
-    ai_draft_status: Optional[str] = None
-    ai_action_status: Optional[str] = None
+    ai_draft_status: Optional[Literal["pending", "approved", "rejected"]] = None
+    ai_action_status: Optional[Literal["pending", "approved", "rejected"]] = None
 
 
 class TicketOut(BaseModel):
@@ -47,8 +52,8 @@ class TicketOut(BaseModel):
 
 
 class KnowledgeBaseCreate(BaseModel):
-    title: str
-    content: str
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
     category: str = "general"
     tags: str = ""
 
@@ -66,7 +71,7 @@ class KnowledgeBaseOut(BaseModel):
 
 class CommunicationCreate(BaseModel):
     sender: str
-    content: str
+    content: str = Field(min_length=1)
     communication_type: str = "note"
 
 

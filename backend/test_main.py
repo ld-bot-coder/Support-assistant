@@ -359,3 +359,89 @@ def test_kb_article_not_found():
 def test_update_nonexistent_ticket():
     res = client.patch("/api/tickets/99999", json={"status": "resolved"})
     assert res.status_code == 404
+
+
+# === NEW TESTS: Validation guards ===
+
+def test_invalid_status_rejected():
+    created = _create_ticket()
+    res = client.patch(f"/api/tickets/{created['id']}", json={"status": "invalid_status"})
+    assert res.status_code == 422
+
+
+def test_invalid_urgency_rejected():
+    res = client.post("/api/tickets", json={
+        "customer_type": "customer",
+        "product_area": "billing",
+        "issue_description": "Test issue",
+        "urgency": "ultra_high"
+    })
+    assert res.status_code == 422
+
+
+def test_invalid_draft_status_rejected():
+    created = _create_ticket()
+    res = client.patch(f"/api/tickets/{created['id']}", json={"ai_draft_status": "invalid"})
+    assert res.status_code == 422
+
+
+def test_invalid_action_status_rejected():
+    created = _create_ticket()
+    res = client.patch(f"/api/tickets/{created['id']}", json={"ai_action_status": "invalid"})
+    assert res.status_code == 422
+
+
+def test_empty_communication_rejected():
+    created = _create_ticket()
+    res = client.post(f"/api/tickets/{created['id']}/communications", json={
+        "sender": "agent", "content": ""
+    })
+    assert res.status_code == 422
+
+
+def test_ai_workflow_blocked_on_closed_ticket():
+    created = _create_ticket()
+    client.patch(f"/api/tickets/{created['id']}", json={"status": "closed"})
+    res = client.post(f"/api/tickets/{created['id']}/run-ai-workflow")
+    assert res.status_code == 400
+    assert "closed" in res.json()["detail"].lower()
+
+
+def test_ai_workflow_blocked_on_resolved_ticket():
+    created = _create_ticket()
+    client.patch(f"/api/tickets/{created['id']}", json={"status": "resolved"})
+    res = client.post(f"/api/tickets/{created['id']}/run-ai-workflow")
+    assert res.status_code == 400
+    assert "resolved" in res.json()["detail"].lower()
+
+
+@patch("ai_service._call_llm")
+def test_ai_workflow_preserves_approved_draft(mock_llm):
+    draft_ok = _llm_ok({"response": "ORIGINAL DRAFT", "citations": [1], "reasoning": "Test"})
+    action_ok = _llm_ok({"action_type": "no_action_needed", "description": "Test", "reasoning": "Test"})
+    mock_llm.side_effect = [
+        _llm_ok({"category": "billing", "suggested_urgency": "high", "classification_reasoning": "Test"}),
+        _llm_ok({"relevant_article_ids": [1], "relevance_reasoning": "Test"}),
+        _llm_ok({"missing_info": ["Need details"], "follow_up_questions": ["What is your ID?"]}),
+        draft_ok,
+        action_ok,
+    ]
+    created = _create_ticket()
+    client.post(f"/api/tickets/{created['id']}/run-ai-workflow")
+    client.patch(f"/api/tickets/{created['id']}", json={"ai_draft_status": "approved"})
+    original_draft = _get_ticket_field(created["id"], "ai_drafted_response")
+
+    mock_llm.side_effect = [
+        _llm_ok({"category": "billing", "suggested_urgency": "high", "classification_reasoning": "Test"}),
+        _llm_ok({"relevant_article_ids": [1], "relevance_reasoning": "Test"}),
+        _llm_ok({"missing_info": ["Need details"], "follow_up_questions": ["What is your ID?"]}),
+        action_ok,
+    ]
+    client.post(f"/api/tickets/{created['id']}/run-ai-workflow")
+    after_rerun = _get_ticket_field(created["id"], "ai_drafted_response")
+    assert after_rerun == original_draft
+
+
+def _get_ticket_field(ticket_id: int, field: str):
+    res = client.get(f"/api/tickets/{ticket_id}")
+    return res.json().get(field, "")

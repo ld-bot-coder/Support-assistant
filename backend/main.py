@@ -98,6 +98,16 @@ def run_ai_workflow(ticket_id: int, db: Session = Depends(get_db)):
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.status in ("resolved", "closed"):
+        raise HTTPException(status_code=400, detail="Cannot run AI workflow on resolved or closed tickets")
+
+    is_rerun = ticket.ai_category != ""
+    draft_protected = ticket.ai_draft_status in ("approved", "rejected")
+    action_protected = ticket.ai_action_status in ("approved", "rejected")
+
+    if is_rerun:
+        ticket.ai_draft_status = "pending"
+        ticket.ai_action_status = "pending"
 
     step = 0
 
@@ -133,35 +143,45 @@ def run_ai_workflow(ticket_id: int, db: Session = Depends(get_db)):
                  status="error" if info_result.get("_error") else "success")
 
     if relevant_articles:
-        draft_result = draft_response(
-            ticket.issue_description, ticket.customer_type, ticket.product_area,
-            ticket.previous_communication, ticket.urgency,
-            [{"id": a.id, "title": a.title, "content": a.content} for a in relevant_articles],
-            info_result.get("missing_info", []), info_result.get("follow_up_questions", [])
-        )
-        ticket.ai_drafted_response = draft_result.get("response", "")
-        citations = draft_result.get("citations", [])
-        step += 1
-        log_activity(db, ticket_id, "ai_draft", json.dumps(draft_result),
-                     model_used=draft_result.get("_model", ""), tokens_used=draft_result.get("_tokens", 0),
-                     latency_ms=draft_result.get("_latency_ms", 0), step_number=step,
-                     status="error" if draft_result.get("_error") else "success")
+        if not draft_protected:
+            draft_result = draft_response(
+                ticket.issue_description, ticket.customer_type, ticket.product_area,
+                ticket.previous_communication, ticket.urgency,
+                [{"id": a.id, "title": a.title, "content": a.content} for a in relevant_articles],
+                info_result.get("missing_info", []), info_result.get("follow_up_questions", [])
+            )
+            ticket.ai_drafted_response = draft_result.get("response", "")
+            citations = draft_result.get("citations", [])
+            step += 1
+            log_activity(db, ticket_id, "ai_draft", json.dumps(draft_result),
+                         model_used=draft_result.get("_model", ""), tokens_used=draft_result.get("_tokens", 0),
+                         latency_ms=draft_result.get("_latency_ms", 0), step_number=step,
+                         status="error" if draft_result.get("_error") else "success")
+        else:
+            citations = safe_parse_citations(ticket.ai_suggested_action_citations)
+            step += 1
+            log_activity(db, ticket_id, "ai_draft", "Draft preserved - previously approved/rejected", step_number=step, status="skipped")
 
-        action_result = suggest_internal_action(
-            ticket.issue_description, classification.get("category", ""),
-            classification.get("suggested_urgency", ""), ticket.product_area,
-            [{"id": a.id, "title": a.title} for a in relevant_articles]
-        )
-        ticket.ai_suggested_action_type = action_result.get("action_type", "")
-        ticket.ai_suggested_action_description = action_result.get("description", "")
-        ticket.ai_suggested_action_citations = json.dumps({"citations": citations, "action_reasoning": action_result.get("reasoning", "")})
-        step += 1
-        log_activity(db, ticket_id, "ai_action_suggestion", json.dumps(action_result),
-                     model_used=action_result.get("_model", ""), tokens_used=action_result.get("_tokens", 0),
-                     latency_ms=action_result.get("_latency_ms", 0), step_number=step,
-                     status="error" if action_result.get("_error") else "success")
+        if not action_protected:
+            action_result = suggest_internal_action(
+                ticket.issue_description, classification.get("category", ""),
+                classification.get("suggested_urgency", ""), ticket.product_area,
+                [{"id": a.id, "title": a.title} for a in relevant_articles]
+            )
+            ticket.ai_suggested_action_type = action_result.get("action_type", "")
+            ticket.ai_suggested_action_description = action_result.get("description", "")
+            ticket.ai_suggested_action_citations = json.dumps({"citations": citations, "action_reasoning": action_result.get("reasoning", "")})
+            step += 1
+            log_activity(db, ticket_id, "ai_action_suggestion", json.dumps(action_result),
+                         model_used=action_result.get("_model", ""), tokens_used=action_result.get("_tokens", 0),
+                         latency_ms=action_result.get("_latency_ms", 0), step_number=step,
+                         status="error" if action_result.get("_error") else "success")
+        else:
+            step += 1
+            log_activity(db, ticket_id, "ai_action_suggestion", "Action preserved - previously approved/rejected", step_number=step, status="skipped")
     else:
-        ticket.ai_drafted_response = "No relevant knowledge articles found to base a response on. Please review manually."
+        if not draft_protected:
+            ticket.ai_drafted_response = "No relevant knowledge articles found to base a response on. Please review manually."
         ticket.ai_suggested_action_type = "request_clarification"
         ticket.ai_suggested_action_description = "No relevant KB articles found. Manual review needed."
 
@@ -170,6 +190,13 @@ def run_ai_workflow(ticket_id: int, db: Session = Depends(get_db)):
     db.refresh(ticket)
     log_activity(db, ticket_id, "ai_workflow_completed", "Full AI workflow executed", step_number=step)
     return ticket
+
+
+def safe_parse_citations(raw: str):
+    try:
+        return json.loads(raw).get("citations", []) if raw else []
+    except (json.JSONDecodeError, AttributeError):
+        return []
 
 
 @app.post("/api/knowledge-base", response_model=KnowledgeBaseOut)
