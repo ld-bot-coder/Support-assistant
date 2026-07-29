@@ -102,8 +102,8 @@ def run_ai_workflow(ticket_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Cannot run AI workflow on resolved or closed tickets")
 
     is_rerun = ticket.ai_category != ""
-    draft_protected = ticket.ai_draft_status in ("approved", "rejected")
-    action_protected = ticket.ai_action_status in ("approved", "rejected")
+    draft_protected = ticket.ai_draft_status == "approved"
+    action_protected = ticket.ai_action_status == "approved"
 
     if is_rerun:
         ticket.ai_draft_status = "pending"
@@ -158,9 +158,9 @@ def run_ai_workflow(ticket_id: int, db: Session = Depends(get_db)):
                          latency_ms=draft_result.get("_latency_ms", 0), step_number=step,
                          status="error" if draft_result.get("_error") else "success")
         else:
-            citations = safe_parse_citations(ticket.ai_suggested_action_citations)
+            citations = [a.id for a in relevant_articles]
             step += 1
-            log_activity(db, ticket_id, "ai_draft", "Draft preserved - previously approved/rejected", step_number=step, status="skipped")
+            log_activity(db, ticket_id, "ai_draft", "Draft preserved - previously approved", step_number=step, status="skipped")
 
         if not action_protected:
             action_result = suggest_internal_action(
@@ -178,7 +178,7 @@ def run_ai_workflow(ticket_id: int, db: Session = Depends(get_db)):
                          status="error" if action_result.get("_error") else "success")
         else:
             step += 1
-            log_activity(db, ticket_id, "ai_action_suggestion", "Action preserved - previously approved/rejected", step_number=step, status="skipped")
+            log_activity(db, ticket_id, "ai_action_suggestion", "Action preserved - previously approved", step_number=step, status="skipped")
     else:
         if not draft_protected:
             ticket.ai_drafted_response = "No relevant knowledge articles found to base a response on. Please review manually."

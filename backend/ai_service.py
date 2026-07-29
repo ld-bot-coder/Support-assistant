@@ -131,8 +131,8 @@ def draft_response(issue_description: str, customer_type: str, product_area: str
         for a in kb_articles
     ])
     article_ids = [a["id"] for a in kb_articles]
-    system_prompt = "You draft customer support responses. Only use facts from the provided knowledge articles — do NOT invent phone numbers, URLs, refund amounts, timelines, or policies not explicitly stated in the articles. Respond with valid JSON only."
-    user_prompt = f"""Draft a customer support response for this ticket using ONLY information from the provided knowledge base articles. Do NOT fabricate details.
+    system_prompt = "You draft helpful, professional customer support responses. Use ONLY facts from the provided knowledge articles. Do NOT invent phone numbers, URLs, refund amounts, timelines, or policies not in the articles. Respond with valid JSON only."
+    user_prompt = f"""Draft a customer support response for this ticket. Base your response on the provided knowledge base articles. If the articles don't fully answer the issue, be helpful but honest and ask the customer for the missing details listed below.
 
 Customer Type: {customer_type}
 Product Area: {product_area}
@@ -140,26 +140,32 @@ Issue Description: {issue_description}
 Previous Communication: {previous_communication or "None"}
 Urgency: {urgency}
 
-Knowledge Base Articles (ONLY use facts from these):
+Knowledge Base Articles:
 {articles_text}
 
-Missing Information: {json.dumps(missing_info)}
+Missing Information to Ask For: {json.dumps(missing_info)}
 Follow-up Questions: {json.dumps(follow_up_questions)}
 
 IMPORTANT RULES:
-1. Only reference procedures, policies, and contact details that appear in the articles above
-2. Do NOT invent phone numbers, email addresses, URLs, refund guarantees, or timelines
-3. If an article mentions a process (e.g., "go to Settings > Billing"), you may reference that
+1. ALWAYS write a non-empty, complete response
+2. Reference only procedures, policies, and contact details from the articles above
+3. Do NOT invent phone numbers, email addresses, URLs, refund guarantees, or timelines
+4. Use the follow-up questions when the articles don't provide enough information to resolve the issue directly
+5. Citations must be one of these article IDs: {article_ids}
 
 Return a JSON object with:
-- "response": the drafted customer response (grounded ONLY in provided articles)
-- "citations": list of NUMERIC article IDs used (e.g., [2, 8]) — use integers, not strings like "Article 2"
+- "response": the drafted customer response (ALWAYS non-empty, helpful, and grounded in the articles)
+- "citations": list of NUMERIC article IDs used from {article_ids} — integers only, e.g., [2, 8]
 - "reasoning": brief explanation of how the articles were used
 """
     result = _call_llm(system_prompt, user_prompt, temperature=0.4)
     if result["error"]:
         return {"response": "Unable to draft response. AI service unavailable.", "citations": [], "reasoning": result["error"], "_error": result["error"], "_model": result["model"], "_tokens": result["tokens"], "_latency_ms": result["latency_ms"]}
     data = result["data"]
+    response = data.get("response", "").strip()
+    if not response:
+        response = "Thank you for contacting us. We have received your request and are reviewing the available information. We may need a few additional details from you to proceed."
+    data["response"] = response
     citations = data.get("citations", [])
     data["citations"] = [int(c) if isinstance(c, (int, str)) and str(c).isdigit() else c for c in citations]
     data["_model"] = result["model"]

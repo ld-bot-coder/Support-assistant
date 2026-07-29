@@ -445,3 +445,48 @@ def test_ai_workflow_preserves_approved_draft(mock_llm):
 def _get_ticket_field(ticket_id: int, field: str):
     res = client.get(f"/api/tickets/{ticket_id}")
     return res.json().get(field, "")
+
+
+@patch("ai_service._call_llm")
+def test_rejected_draft_regenerated_on_rerun(mock_llm):
+    draft1 = _llm_ok({"response": "FIRST DRAFT", "citations": [1], "reasoning": "Test"})
+    draft2 = _llm_ok({"response": "SECOND DRAFT", "citations": [1], "reasoning": "Test"})
+    action_ok = _llm_ok({"action_type": "no_action_needed", "description": "Test", "reasoning": "Test"})
+    mock_llm.side_effect = [
+        _llm_ok({"category": "technical", "suggested_urgency": "high", "classification_reasoning": "Test"}),
+        _llm_ok({"relevant_article_ids": [1], "relevance_reasoning": "Test"}),
+        _llm_ok({"missing_info": ["Need details"], "follow_up_questions": ["What is your ID?"]}),
+        draft1,
+        action_ok,
+    ]
+    created = _create_ticket()
+    client.post(f"/api/tickets/{created['id']}/run-ai-workflow")
+    client.patch(f"/api/tickets/{created['id']}", json={"ai_draft_status": "rejected"})
+    original_draft = _get_ticket_field(created["id"], "ai_drafted_response")
+    assert original_draft == "FIRST DRAFT"
+
+    mock_llm.side_effect = [
+        _llm_ok({"category": "technical", "suggested_urgency": "high", "classification_reasoning": "Test"}),
+        _llm_ok({"relevant_article_ids": [1], "relevance_reasoning": "Test"}),
+        _llm_ok({"missing_info": ["Need details"], "follow_up_questions": ["What is your ID?"]}),
+        draft2,
+        action_ok,
+    ]
+    client.post(f"/api/tickets/{created['id']}/run-ai-workflow")
+    after_rerun = _get_ticket_field(created["id"], "ai_drafted_response")
+    assert after_rerun == "SECOND DRAFT"
+
+
+@patch("ai_service._call_llm")
+def test_ai_workflow_returns_nonempty_draft(mock_llm):
+    mock_llm.side_effect = [
+        _llm_ok({"category": "billing", "suggested_urgency": "high", "classification_reasoning": "Test"}),
+        _llm_ok({"relevant_article_ids": [1], "relevance_reasoning": "Test"}),
+        _llm_ok({"missing_info": ["Need invoice"], "follow_up_questions": ["What is invoice?"]}),
+        _llm_ok({"response": "", "citations": [1], "reasoning": "Test"}),
+        _llm_ok({"action_type": "no_action_needed", "description": "Test", "reasoning": "Test"}),
+    ]
+    created = _create_ticket()
+    res = client.post(f"/api/tickets/{created['id']}/run-ai-workflow")
+    data = res.json()
+    assert len(data["ai_drafted_response"]) > 0
